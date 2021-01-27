@@ -306,7 +306,7 @@ if __name__ == "__main__":
             q1, = network.get_node("node_A").qmemory.peek(0)
             q2, = network.get_node("node_B").qmemory.peek(0)
             fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
-            #print(fidelity)
+            #print()
         
     print("The average fidelity of generated entanglement: {}".format(fidelity/number_of_experiments))
 
