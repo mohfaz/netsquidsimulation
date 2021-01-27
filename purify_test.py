@@ -235,7 +235,8 @@ class EntangleNodes(NodeProtocol):
         return True
 
 
-def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0):
+def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
+                          ,memory_a_depolar_rate=1e+3,memory_b_depolar_rate=1e+3,channel_depolar_rate=1e+3):
     """Create an example network for use with the entangling nodes protocol.
 
     Parameters
@@ -264,11 +265,11 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0):
     
     node_a.add_subcomponent(QuantumProcessor(  # add quanutm processor to the node a
         "QuantumMemoryATest", num_mem_positions, fallback_to_nonphysical=True,
-        memory_noise_models=DepolarNoiseModel(depolar_rate)))
+        memory_noise_models=DepolarNoiseModel(memory_a_depolar_rate)))
     
     node_b.add_subcomponent(QuantumProcessor( # add quanutm processor to the node b
         "QuantumMemoryBTest", num_mem_positions, fallback_to_nonphysical=True,
-        memory_noise_models=DepolarNoiseModel(depolar_rate)))
+        memory_noise_models=DepolarNoiseModel(memory_b_depolar_rate)))
     
     node_a.add_subcomponent(    # add bell state generator to the node a
         QSource("QSourceTest", state_sampler=StateSampler([ks.b00]),
@@ -283,8 +284,10 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0):
     loss_model = FibreLossModel(p_loss_init = p_loss_init, p_loss_length = p_loss_length)
     
     # Create and connect quantum channel:
+    # defining the delay, photon loss, and noise models in channel.
+    models={'delay_model':delay_model,'quantum_loss_model':loss_model, 'quantum_noise_model':DepolarNoiseModel(channel_depolar_rate)} 
     
-    qchannel = QuantumChannel("QuantumChannelTest",length=channel_length, models={'delay_model':delay_model,'quantum_loss_model':loss_model})
+    qchannel = QuantumChannel("QuantumChannelTest",length=channel_length, models = models)
     
     port_name_a, port_name_b = network.add_connection(
         node_a, node_b, channel_to=qchannel, label="quantum")
@@ -303,7 +306,7 @@ if __name__ == "__main__":
     number_of_experiments = 100
     fidelity = 0.0;
     distances = [0.1,0.5,1,2,5,10] # distance vector, the unit is km.
-    distances = [100]
+    distances = [10]
     for distance in distances:
     
         print("For the distance in ".format(distance))
