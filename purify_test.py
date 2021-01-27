@@ -276,11 +276,15 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0):
                 models={"emission_delay_model": FixedDelayModel(delay=prep_delay)}))
     
     # Creating delay model and photon loss model for quantum channel
+    p_loss_init = 0.0
+    p_loss_length  = 0
+    
     delay_model = FibreDelayModel()
-    loss_model = FibreLossModel(p_loss_init = 0.83, p_loss_length = 10)
+    loss_model = FibreLossModel(p_loss_init = p_loss_init, p_loss_length = p_loss_length)
     
     # Create and connect quantum channel:
-    qchannel = QuantumChannel("QuantumChannelTest",length=channel_length, models={'delay_model': delay_model})
+    
+    qchannel = QuantumChannel("QuantumChannelTest",length=channel_length, models={'delay_model':delay_model,'quantum_loss_model':loss_model})
     
     port_name_a, port_name_b = network.add_connection(
         node_a, node_b, channel_to=qchannel, label="quantum")
@@ -299,7 +303,7 @@ if __name__ == "__main__":
     number_of_experiments = 100
     fidelity = 0.0;
     distances = [0.1,0.5,1,2,5,10] # distance vector, the unit is km.
-    distances = [1]
+    distances = [100]
     for distance in distances:
     
         print("For the distance in ".format(distance))
@@ -312,7 +316,8 @@ if __name__ == "__main__":
             ns.sim_run()
             q1, = network.get_node("node_A").qmemory.peek(0)
             q2, = network.get_node("node_B").qmemory.peek(0)
-            fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
+            if q2 != None:
+                fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
             #print()
         
     print("The average fidelity of generated entanglement: {}".format(fidelity/number_of_experiments))
