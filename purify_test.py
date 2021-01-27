@@ -110,7 +110,10 @@ from netsquid.components.qsource import QSource, SourceStatus
 from netsquid.components.qprocessor import QuantumProcessor
 from netsquid.qubits import ketstates as ks
 from netsquid.qubits.state_sampler import StateSampler
-from netsquid.components.models.delaymodels import FixedDelayModel
+
+from netsquid.components.models.delaymodels import FixedDelayModel, FibreDelayModel  # importing fibre delay model
+from netsquid.components.models.qerrormodels import FibreLossModel # importing fibre loss model
+
 from netsquid.components.qchannel import QuantumChannel
 from netsquid.nodes.network import Network
 from pydynaa import EventExpression
@@ -232,7 +235,7 @@ class EntangleNodes(NodeProtocol):
         return True
 
 
-def example_network_setup(prep_delay=5, qchannel_delay=100, num_mem_positions=3,channel_length = 0):
+def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0):
     """Create an example network for use with the entangling nodes protocol.
 
     Parameters
@@ -272,8 +275,12 @@ def example_network_setup(prep_delay=5, qchannel_delay=100, num_mem_positions=3,
                 num_ports=2, status=SourceStatus.EXTERNAL,
                 models={"emission_delay_model": FixedDelayModel(delay=prep_delay)}))
     
+    # Creating delay model and photon loss model for quantum channel
+    delay_model = FibreDelayModel()
+    loss_model = FibreLossModel(p_loss_init = 0.83, p_loss_length = 10)
+    
     # Create and connect quantum channel:
-    qchannel = QuantumChannel("QuantumChannelTest", delay=qchannel_delay,length=channel_length)
+    qchannel = QuantumChannel("QuantumChannelTest",length=channel_length, models={'delay_model': delay_model})
     
     port_name_a, port_name_b = network.add_connection(
         node_a, node_b, channel_to=qchannel, label="quantum")
@@ -292,7 +299,7 @@ if __name__ == "__main__":
     number_of_experiments = 100
     fidelity = 0.0;
     distances = [0.1,0.5,1,2,5,10] # distance vector, the unit is km.
-    distances = [0.1]
+    distances = [1]
     for distance in distances:
     
         print("For the distance in ".format(distance))
