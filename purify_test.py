@@ -278,7 +278,7 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
     
     # Creating delay model and photon loss model for quantum channel
     p_loss_init = 0.0
-    p_loss_length  = 0.1
+    p_loss_length  = 0.0
     
     delay_model = FibreDelayModel()
     loss_model = FibreLossModel(p_loss_init = p_loss_init, p_loss_length = p_loss_length)
@@ -306,13 +306,13 @@ if __name__ == "__main__":
     
     number_of_experiments = 1000
     fidelity_list = list();
-    distances = [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100] # distance vector, the unit is km.
-    
+    distances = [1, 5, 10, 20, 50, 100,200] # distance vector, the unit is km.
+ 
     for distance in distances:
         fidelity = 0.0;
         
         for _ in range(number_of_experiments):
-            network = example_network_setup(channel_length = distance,memory_a_depolar_rate=1e+3,channel_depolar_rate=1e+4)
+            network = example_network_setup(channel_length = distance,memory_a_depolar_rate=1e+2,channel_depolar_rate=1e+3)
             protocol_a = EntangleNodes(node=network.get_node("node_A"), role="source")
             protocol_b = EntangleNodes(node=network.get_node("node_B"), role="receiver")
             protocol_a.start()
