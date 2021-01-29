@@ -278,7 +278,7 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
     
     # Creating delay model and photon loss model for quantum channel
     p_loss_init = 0.0
-    p_loss_length  = 0
+    p_loss_length  = 0.1
     
     delay_model = FibreDelayModel()
     loss_model = FibreLossModel(p_loss_init = p_loss_init, p_loss_length = p_loss_length)
@@ -303,15 +303,16 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
 
 
 if __name__ == "__main__":
-    number_of_experiments = 100
-    fidelity = 0.0;
-    distances = [0.1,0.5,1,2,5,10] # distance vector, the unit is km.
-    distances = [10]
-    for distance in distances:
     
-        print("For the distance in ".format(distance))
+    number_of_experiments = 1000
+    fidelity_list = list();
+    distances = [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100] # distance vector, the unit is km.
+    
+    for distance in distances:
+        fidelity = 0.0;
+        
         for _ in range(number_of_experiments):
-            network = example_network_setup(channel_length = distance)
+            network = example_network_setup(channel_length = distance,memory_a_depolar_rate=1e+3,channel_depolar_rate=1e+4)
             protocol_a = EntangleNodes(node=network.get_node("node_A"), role="source")
             protocol_b = EntangleNodes(node=network.get_node("node_B"), role="receiver")
             protocol_a.start()
@@ -321,7 +322,7 @@ if __name__ == "__main__":
             q2, = network.get_node("node_B").qmemory.peek(0)
             if q2 != None:
                 fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
-            #print()
-        
-    print("The average fidelity of generated entanglement: {}".format(fidelity/number_of_experiments))
+
+        fidelity_list.append(fidelity/number_of_experiments)    
+        print("For the distance equals to {} km the average fidelity is {}".format(distance,fidelity/number_of_experiments))
 
