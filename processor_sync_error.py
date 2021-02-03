@@ -22,13 +22,13 @@ phys_instructions = [
                         topology=[(0,1)]),
         
     PhysicalInstruction(
-        instr.INSTR_MEASURE, duration=7, parallel=False,
-        quantum_noise_model=DepolarNoiseModel(depolar_rate=0.00, time_independent=True),
-        apply_q_noise_after=False, topology=[1]),
+        instr.INSTR_MEASURE, duration=0, parallel=False,
+
+        apply_q_noise_after=False, topology=[3]),
     
     
-    PhysicalInstruction(instr.INSTR_MEASURE, duration=7, parallel=True,
-                        topology=[0, 2])
+    PhysicalInstruction(instr.INSTR_MEASURE, duration=0, parallel=True,
+                        topology=[0, 1])
     
 ]
 
@@ -38,9 +38,10 @@ fidelity_list = [];
 
 
 duration = [1,1e+3,2e+3,1e+4,1e+5,2e+5,1e+6,1e+9]
-
+# duration = [2e+5]
 for d in duration:
-    ph = PhysicalInstruction(instr.INSTR_X, duration=d, parallel=False, topology=[3, 2])    
+    print('for duration {}'.format(d))
+    ph = PhysicalInstruction(instr.INSTR_X, duration=d, parallel=False, topology=[2, 3])    
     phys_instructions.append(ph)
     
     fidelity = 0
@@ -58,7 +59,7 @@ for d in duration:
     prog.apply(instr.INSTR_H, q1)
     prog.apply(instr.INSTR_CNOT, [q1, q2])
     prog.apply(instr.INSTR_X,[q3])
-    for _ in range(1000):
+    for _ in range(int(1e+4)):
         ns.sim_reset()
         
         noisy_qproc.reset()
@@ -68,4 +69,4 @@ for d in duration:
         q2 = noisy_qproc.pop(1)
         # print(q1,q2)
         fidelity = fidelity + ns.qubits.fidelity([q1[0], q2[0]], ks.b00);
-    fidelity_list.append(fidelity/1000)
+    fidelity_list.append(fidelity/int(1e+4))
