@@ -320,6 +320,7 @@ if __name__ == "__main__":
             ns.sim_run()
             q1, = network.get_node("node_A").qmemory.peek(0)
             q2, = network.get_node("node_B").qmemory.peek(0)
+       
             if q2 != None:
                 fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
 
