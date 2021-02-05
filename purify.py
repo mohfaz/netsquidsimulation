@@ -302,11 +302,13 @@ class Distil(NodeProtocol):
     port : :py:class:`~netsquid.components.component.Port`
         Port to use for classical IO communication to the other node.
     role : "A" or "B"
-        Distillation requires that one of the nodes ("B") conjugate its rotation,
+        Distillation requires that one of the nodes ("B") conjugate its 
+        rotation,
         while the other doesn't ("A").
     start_expression : :class:`~pydynaa.EventExpression`
         EventExpression node should wait for before starting distillation.
-        The EventExpression should have a protocol as source, this protocol should signal the quantum memory position
+        The EventExpression should have a protocol as source, this protocol 
+        should signal the quantum memory position
         of the qubit.
     msg_header : str, optional
         Value of header meta field used for classical communication.
@@ -319,18 +321,25 @@ class Distil(NodeProtocol):
     _INSTR_RxC = IGate("RxC_gate", ops.create_rotation_op(np.pi / 2, (1, 0, 0), conjugate=True))
 
     def __init__(self, node, port, role, start_expression=None, msg_header="distil", name=None):
-        if role.upper() not in ["A", "B"]:
+        if role.upper() not in ["A", "B"]: # check the roles
             raise ValueError
+            
         conj_rotation = role.upper() == "B"
+        
         if not isinstance(port, Port):
-            raise ValueError("{} is not a Port".format(port))
+            raise ValueError("{} is not a Port".format(port)) # check if the port is port
+        
         name = name if name else "DistilNode({}, {})".format(node.name, port.name)
-        super().__init__(node, name=name)
+        
+        super().__init__(node, name=name) # the super is nodeprotocol
+        
         self.port = port
         # TODO rename this expression to 'qubit input'
         self.start_expression = start_expression
         self._program = self._setup_dejmp_program(conj_rotation)
+        
         # self.INSTR_ROT = self._INSTR_Rx if not conj_rotation else self._INSTR_RxC
+        
         self.local_qcount = 0
         self.local_meas_result = None
         self.remote_qcount = 0
@@ -341,7 +350,8 @@ class Distil(NodeProtocol):
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
 
-    def _setup_dejmp_program(self, conj_rotation):
+    def _setup_dejmp_program(self, conj_rotation): # just setup the duetch et al purification protocol
+        # this method is called by constructor
         INSTR_ROT = self._INSTR_Rx if not conj_rotation else self._INSTR_RxC
         prog = QuantumProgram(num_qubits=2)
         q1, q2 = prog.get_qubit_indices(2)
@@ -350,24 +360,30 @@ class Distil(NodeProtocol):
         prog.apply(INSTR_CNOT, [q1, q2])
         prog.apply(INSTR_MEASURE, q2, output_key="m", inplace=False)
         return prog
+    
 
     def run(self):
         cchannel_ready = self.await_port_input(self.port)
         qmemory_ready = self.start_expression
         while True:
             # self.send_signal(Signals.WAITING)
-            expr = yield cchannel_ready | qmemory_ready
+            expr = yield cchannel_ready | qmemory_ready # I think check if channel ready or the memory is ready
             # self.send_signal(Signals.BUSY)
             if expr.first_term.value:
-                classical_message = self.port.rx_input(header=self.header)
+                classical_message = self.port.rx_input(header=self.header) # classical message
                 if classical_message:
                     self.remote_qcount, self.remote_meas_result = classical_message.items
             elif expr.second_term.value:
+                
                 source_protocol = expr.second_term.atomic_source
+                
                 ready_signal = source_protocol.get_signal_by_event(
                     event=expr.second_term.triggered_events[0], receiver=self)
+                
                 yield from self._handle_new_qubit(ready_signal.result)
+                
             self._check_success()
+
 
     def start(self):
         # Clear any held qubits
@@ -380,21 +396,23 @@ class Distil(NodeProtocol):
         return super().start()
 
     def _clear_qmem_positions(self):
+        # invoked in start and _check_success
         positions = [pos for pos in self._qmem_positions if pos is not None]
         if len(positions) > 0:
             self.node.qmemory.pop(positions=positions)
-        self._qmem_positions = [None, None]
+        self._qmem_positions = [None, None] # TODO what if the we use more than two qubits
 
-    def _handle_new_qubit(self, memory_position):
+    def _handle_new_qubit(self, memory_position): 
         # Process signalling of new entangled qubit
-        assert not self.node.qmemory.mem_positions[memory_position].is_empty
+        # invoked buy run
+        assert not self.node.qmemory.mem_positions[memory_position].is_empty # memory should not be empty
         if self._waiting_on_second_qubit:
             # Second qubit arrived: perform distil
             assert not self.node.qmemory.mem_positions[self._qmem_positions[0]].is_empty
             assert memory_position != self._qmem_positions[0]
             self._qmem_positions[1] = memory_position
             self._waiting_on_second_qubit = False
-            yield from self._node_do_DEJMPS()
+            yield from self._node_do_DEJMPS() # second qubit is hear. Do the dejmps purification
         else:
             # New candidate for first qubit arrived
             # Pop previous qubit if present:
@@ -406,10 +424,11 @@ class Distil(NodeProtocol):
             self._qmem_positions[1] = None
             self.local_qcount += 1
             self.local_meas_result = None
-            self._waiting_on_second_qubit = True
+            self._waiting_on_second_qubit = True # wait on the second qubit
 
     def _node_do_DEJMPS(self):
         # Perform DEJMPS distillation protocol locally on one node
+        # Invoked by _handle_new_qubits method
         pos1, pos2 = self._qmem_positions
         if self.node.qmemory.busy:
             yield self.await_program(self.node.qmemory)
@@ -417,12 +436,13 @@ class Distil(NodeProtocol):
         yield self.node.qmemory.execute_program(self._program, [pos1, pos2])  # If instruction not instant
         self.local_meas_result = self._program.output["m"][0]
         self._qmem_positions[1] = None
-        # Send local results to the remote node to allow it to check for success.
+        # Send local results to the remote node to allow it to check for success. #TODO optimistic approach: 
         self.port.tx_output(Message([self.local_qcount, self.local_meas_result],
                                     header=self.header))
 
     def _check_success(self):
         # Check if distillation succeeded by comparing local and remote results
+        # used by run() method
         if (self.local_qcount == self.remote_qcount and
                 self.local_meas_result is not None and
                 self.remote_meas_result is not None):
@@ -541,7 +561,7 @@ class FilteringExample(LocalProtocol):
             self.send_signal(Signals.SUCCESS, result)
 
 
-def example_network_setup(source_delay=1e5, source_fidelity_sq=0.8, depolar_rate=1000,
+def example_network_setup(source_delay=1e+5, source_fidelity_sq=0.8, depolar_rate=1000,
                           node_distance=20):
     """Create an example network for use with the purification protocols.
 
@@ -555,12 +575,15 @@ def example_network_setup(source_delay=1e5, source_fidelity_sq=0.8, depolar_rate
         This network is also used by the matching integration test.
 
     """
+    num_positions = max(int(2*node_distance/(source_delay*source_delay/1e+9)),2)
+    print(num_positions)
+    
     network = Network("purify_network")
 
     node_a, node_b = network.add_nodes(["node_A", "node_B"])
     
     node_a.add_subcomponent(QuantumProcessor(
-        "QuantumMemory_A", num_positions=2, fallback_to_nonphysical=True,
+        "QuantumMemory_A", num_positions=num_positions, fallback_to_nonphysical=True,
         memory_noise_models=DepolarNoiseModel(depolar_rate)))
     
     state_sampler = StateSampler(
@@ -573,7 +596,7 @@ def example_network_setup(source_delay=1e5, source_fidelity_sq=0.8, depolar_rate
         num_ports=2, status=SourceStatus.EXTERNAL))
     
     node_b.add_subcomponent(QuantumProcessor(
-        "QuantumMemory_B", num_positions=2, fallback_to_nonphysical=True,
+        "QuantumMemory_B", num_positions=num_positions, fallback_to_nonphysical=True,
         memory_noise_models=DepolarNoiseModel(depolar_rate)))
     
     conn_cchannel = DirectConnection(
@@ -589,7 +612,7 @@ def example_network_setup(source_delay=1e5, source_fidelity_sq=0.8, depolar_rate
     qchannel = QuantumChannel("QChannel_A->B", length=node_distance,
                               models={"quantum_loss_model": None,
                                       "delay_model": FibreDelayModel(c=200e3)},
-                              depolar_rate=0)
+                              depolar_rate=depolar_rate)
     
     port_name_a, port_name_b = network.add_connection(
         node_a, node_b, channel_to=qchannel, label="quantum")
@@ -640,11 +663,19 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
 
 if __name__ == "__main__":
     num_runs = int(1e+3)
-    network = example_network_setup()
-    filt_example, dc = example_sim_setup(network.get_node("node_A"),
+    fidelity_list = []
+    distances = [1,2,5,20,30,40,50]
+    distances = 50
+    for distance in distances:
+        ns.sim_reset()
+        network = example_network_setup(node_distance = distance)
+        filt_example, dc = example_sim_setup(network.get_node("node_A"),
                                          network.get_node("node_B"),
                                          num_runs=num_runs)
-    filt_example.start()
-    ns.sim_run()
-    print("Average fidelity of generated entanglement with filtering: {}".format(
-        dc.dataframe["F2"].mean()))
+        filt_example.start()
+        ns.sim_run()
+    
+        fidelity = dc.dataframe["F2"].mean()
+        print("Average fidelity of generated entanglement with filtering: {}".format(fidelity))
+        fidelity_list.append(fidelity)
+        ns.sim_stop()
