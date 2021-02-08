@@ -320,7 +320,7 @@ class Distil(NodeProtocol):
     _INSTR_Rx = IGate("Rx_gate", ops.create_rotation_op(np.pi / 2, (1, 0, 0)))
     _INSTR_RxC = IGate("RxC_gate", ops.create_rotation_op(np.pi / 2, (1, 0, 0), conjugate=True))
 
-    def __init__(self, node, port, role, start_expression=None, msg_header="distil", name=None):
+    def __init__(self, node, port, role, start_expression=None, msg_header="distil", name=None, num_pos=2):
         if role.upper() not in ["A", "B"]: # check the roles
             raise ValueError
             
@@ -340,13 +340,13 @@ class Distil(NodeProtocol):
         
         # self.INSTR_ROT = self._INSTR_Rx if not conj_rotation else self._INSTR_RxC
         
-        self.local_qcount = 0
-        self.local_meas_result = None
-        self.remote_qcount = 0
-        self.remote_meas_result = None
-        self.header = msg_header
-        self._qmem_positions = [None, None]
-        self._waiting_on_second_qubit = False
+        # self.local_qcount = 0
+        # self.local_meas_result = None
+        # self.remote_qcount = 0
+        # self.remote_meas_result = None
+        # self.header = msg_header
+        # self._qmem_positions = [None] * num_pos
+        # self._waiting_on_second_qubit = False
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
 
@@ -665,7 +665,7 @@ if __name__ == "__main__":
     num_runs = int(1e+3)
     fidelity_list = []
     distances = [1,2,5,20,30,40,50]
-    distances = 50
+    # distances = [50]
     for distance in distances:
         ns.sim_reset()
         network = example_network_setup(node_distance = distance)
