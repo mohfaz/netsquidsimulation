@@ -185,6 +185,7 @@ class Filter(NodeProtocol):
             raise ValueError("{} is not a Port".format(port))
         name = name if name else "Filter({}, {})".format(node.name, port.name)
         super().__init__(node, name)
+        
         self.port = port
         # TODO rename this expression to 'qubit input'
         self.start_expression = start_expression
@@ -263,12 +264,14 @@ class Filter(NodeProtocol):
         # Returns true if protocol has succeeded on this node
         if (self.local_qcount > 0 and self.local_qcount == self.remote_qcount and
                 self.local_meas_OK and self.remote_meas_OK):
+            print("success")
             # SUCCESS!
             self.send_signal(Signals.SUCCESS, self._qmem_pos)
         elif self.local_meas_OK and self.local_qcount > self.remote_qcount:
-            # Need to wait for latest remote status
+            # Need to wait for latest remote status, i.e., remote does not send the meas ok yet.
             pass
         else:
+            print("failure")
             # FAILURE
             self._handle_fail()
             self.send_signal(Signals.FAIL, self.local_qcount)
@@ -515,14 +518,17 @@ class FilteringExample(LocalProtocol):
 
     def __init__(self, node_a, node_b, num_runs, epsilon=0.3):
         super().__init__(nodes={"A": node_a, "B": node_b}, name="Filtering example")
+        
         self._epsilon = epsilon
         self.num_runs = num_runs
         # Initialise sub-protocols
+        
         self.add_subprotocol(EntangleNodes(node=node_a, role="source", input_mem_pos=0,
                                            num_pairs=1, name="entangle_A"))
         self.add_subprotocol(
             EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=1,
                           name="entangle_B"))
+       
         self.add_subprotocol(Filter(node_a, node_a.get_conn_port(node_b.ID),
                                     epsilon=epsilon, name="purify_A"))
         self.add_subprotocol(Filter(node_b, node_b.get_conn_port(node_a.ID),
@@ -641,7 +647,7 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
         Dataframe of collected data.
 
     """
-    filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=0.3)
+    filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
 
     def record_run(evexpr):
         # Callback that collects data each run
@@ -650,7 +656,7 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
         # Record fidelity
         q_A, = node_a.qmemory.pop(positions=[result["pos_A"]])
         q_B, = node_b.qmemory.pop(positions=[result["pos_B"]])
-    #    print(q_A.qstate.qrepr)
+    #   print(q_A.qstate.qrepr)
         f2 = qapi.fidelity([q_A, q_B], ks.b01, squared=True)
         return {"F2": f2, "pairs": result["pairs"], "time": result["time"]}
 
@@ -662,10 +668,10 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
 
 
 if __name__ == "__main__":
-    num_runs = int(1e+3)
+    num_runs = int(2)
     fidelity_list = []
-    distances = [1,2,5,20,30,40,50]
-    # distances = [50]
+    # distances = [1,2,5,20,30,40,50]
+    distances = [1]
     for distance in distances:
         ns.sim_reset()
         network = example_network_setup(node_distance = distance)
