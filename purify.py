@@ -337,19 +337,17 @@ class Distil(NodeProtocol):
         super().__init__(node, name=name) # the super is nodeprotocol
         
         self.port = port
-        # TODO rename this expression to 'qubit input'
+       # TODO rename this expression to 'qubit input'
         self.start_expression = start_expression
         self._program = self._setup_dejmp_program(conj_rotation)
-        
         # self.INSTR_ROT = self._INSTR_Rx if not conj_rotation else self._INSTR_RxC
-        
-        # self.local_qcount = 0
-        # self.local_meas_result = None
-        # self.remote_qcount = 0
-        # self.remote_meas_result = None
-        # self.header = msg_header
-        # self._qmem_positions = [None] * num_pos
-        # self._waiting_on_second_qubit = False
+        self.local_qcount = 0
+        self.local_meas_result = None
+        self.remote_qcount = 0
+        self.remote_meas_result = None
+        self.header = msg_header
+        self._qmem_positions = [None, None]
+        self._waiting_on_second_qubit = False
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
 
@@ -472,6 +470,102 @@ class Distil(NodeProtocol):
             return False
         return True
 
+class DistilExample(LocalProtocol):
+    r"""Protocol for a complete filtering experiment.
+
+    Combines the sub-protocols:
+    - :py:class:`~netsquid.examples.entanglenodes.EntangleNodes`
+    - :py:class:`~netsquid.examples.purify.Filter`
+
+    Will run for specified number of times then stop, recording results after each run.
+
+    Parameters
+    ----------
+    node_a : :py:class:`~netsquid.nodes.node.Node`
+        Must be specified before protocol can start.
+    node_b : :py:class:`~netsquid.nodes.node.Node`
+        Must be specified before protocol can start.
+    num_runs : int
+        Number of successful runs to do.
+    epsilon : float
+        Parameter used in filter's measurement operator.
+
+    Attributes
+    ----------
+    results : :py:obj:`dict`
+        Dictionary containing results. Results are :py:class:`numpy.array`\s.
+        Results keys are *F2*, *pairs*, and *time*.
+
+    Subprotocols
+    ------------
+    entangle_A : :class:`~netsquid.examples.entanglenodes.EntangleNodes`
+        Entanglement generation protocol running on node A.
+    entangle_B : :class:`~netsquid.examples.entanglenodes.EntangleNodes`
+        Entanglement generation protocol running on node B.
+    purify_A : :class:`~netsquid.examples.purify.Filter`
+        Purification protocol running on node A.
+    purify_B : :class:`~netsquid.examples.purify.Filter`
+        Purification protocol running on node B.
+
+    Notes
+    -----
+        The filter purification does not support the stabilizer formalism.
+
+    """
+
+    def __init__(self, node_a, node_b, num_runs):
+        super().__init__(nodes={"A": node_a, "B": node_b}, name="Distilling example")
+        
+        self.num_runs = num_runs
+        # Initialise sub-protocols
+        
+        self.add_subprotocol(EntangleNodes(node=node_a, role="source", input_mem_pos=0,
+                                           num_pairs=2, name="entangle_A"))
+        self.add_subprotocol(
+            EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=2,
+                          name="entangle_B"))
+       
+        # self.add_subprotocol(Filter(node_a, node_a.get_conn_port(node_b.ID), #TODO add distilation instructor
+        #                             epsilon=epsilon, name="purify_A"))
+        # self.add_subprotocol(Filter(node_b, node_b.get_conn_port(node_a.ID), #TODO add distilaiton instructor
+        #                             epsilon=epsilon, name="purify_B"))
+        self.add_subprotocol(Distil(node= node_a,
+        port= node_a.get_conn_port(node_b.ID), role='A',name = "purify_A"))
+       
+        self.add_subprotocol(Distil(node= node_b,
+        port= node_b.get_conn_port(node_a.ID), role='B',name = "purify_B"))
+        # Set start expressions
+        self.subprotocols["purify_A"].start_expression = (
+            self.subprotocols["purify_A"].await_signal(self.subprotocols["entangle_A"],
+                                                       Signals.SUCCESS))
+        self.subprotocols["purify_B"].start_expression = (
+            self.subprotocols["purify_B"].await_signal(self.subprotocols["entangle_B"],
+                                                       Signals.SUCCESS))
+        start_expr_ent_A = (self.subprotocols["entangle_A"].await_signal(
+                            self.subprotocols["purify_A"], Signals.FAIL) |
+                            self.subprotocols["entangle_A"].await_signal(
+                                self, Signals.WAITING))
+        self.subprotocols["entangle_A"].start_expression = start_expr_ent_A
+        
+    def run(self):
+        self.start_subprotocols()
+        for i in range(self.num_runs):
+            start_time = sim_time()
+            self.subprotocols["entangle_A"].entangled_pairs = 0
+            self.send_signal(Signals.WAITING)
+            yield (self.await_signal(self.subprotocols["purify_A"], Signals.SUCCESS) &
+                   self.await_signal(self.subprotocols["purify_B"], Signals.SUCCESS))
+            signal_A = self.subprotocols["purify_A"].get_signal_result(Signals.SUCCESS,
+                                                                       self)
+            signal_B = self.subprotocols["purify_B"].get_signal_result(Signals.SUCCESS,
+                                                                       self)
+            result = {
+                "pos_A": signal_A,
+                "pos_B": signal_B,
+                "time": sim_time() - start_time,
+                "pairs": self.subprotocols["entangle_A"].entangled_pairs,
+            }
+            self.send_signal(Signals.SUCCESS, result)
 
 class FilteringExample(LocalProtocol):
     r"""Protocol for a complete filtering experiment.
@@ -567,7 +661,7 @@ class FilteringExample(LocalProtocol):
             self.send_signal(Signals.SUCCESS, result)
 
 
-def example_network_setup(source_delay=1e+5, source_fidelity_sq=0.8, depolar_rate=1000,
+def example_network_setup(source_delay=1e+4, source_fidelity_sq=0.8, depolar_rate=1000,
                           node_distance=20):
     """Create an example network for use with the purification protocols.
 
@@ -582,6 +676,7 @@ def example_network_setup(source_delay=1e+5, source_fidelity_sq=0.8, depolar_rat
 
     """
     num_positions = max(int(2*node_distance/(source_delay*source_delay/1e+9)),2)
+    num_positions = min(num_positions,20)
     print(num_positions)
     
     network = Network("purify_network")
@@ -636,7 +731,7 @@ def example_network_setup(source_delay=1e+5, source_fidelity_sq=0.8, depolar_rat
     return network
 
 
-def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
+def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,purify = "filter"):
     """Example simulation setup for purification protocols.
 
     Returns
@@ -647,8 +742,11 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
         Dataframe of collected data.
 
     """
-    filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
-
+    if purify == "filter":
+        filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
+    else:
+        distil_example = DistilExample(node_a, node_b, num_runs = num_runs)
+        
     def record_run(evexpr):
         # Callback that collects data each run
         protocol = evexpr.triggered_events[-1].source
@@ -656,28 +754,34 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3):
         # Record fidelity
         q_A, = node_a.qmemory.pop(positions=[result["pos_A"]])
         q_B, = node_b.qmemory.pop(positions=[result["pos_B"]])
-    #   print(q_A.qstate.qrepr)
+        # print(q_A.qstate.qrepr)
         f2 = qapi.fidelity([q_A, q_B], ks.b01, squared=True)
         return {"F2": f2, "pairs": result["pairs"], "time": result["time"]}
-
     dc = DataCollector(record_run, include_time_stamp=False,
                        include_entity_name=False)
-    dc.collect_on(pd.EventExpression(source=filt_example,
-                                     event_type=Signals.SUCCESS.value))
-    return filt_example, dc
+    if purify == "filter":
+        dc.collect_on(pd.EventExpression(source=filt_example,
+                                         event_type=Signals.SUCCESS.value))
+        return filt_example, dc
+    
+    else:
+        dc.collect_on(pd.EventExpression(source=distil_example,
+                                             event_type=Signals.SUCCESS.value))
+        return distil_example, dc
+            
 
 
 if __name__ == "__main__":
-    num_runs = int(2)
+    num_runs = int(1e+4)
     fidelity_list = []
-    # distances = [1,2,5,20,30,40,50]
-    distances = [1]
+    distances = [1,2,5,20,30,40,50]
+    distances = [50]
     for distance in distances:
         ns.sim_reset()
         network = example_network_setup(node_distance = distance)
         filt_example, dc = example_sim_setup(network.get_node("node_A"),
                                          network.get_node("node_B"),
-                                         num_runs=num_runs)
+                                         num_runs=num_runs, purify = "distil")
         filt_example.start()
         ns.sim_run()
     
