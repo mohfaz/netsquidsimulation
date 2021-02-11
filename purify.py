@@ -772,10 +772,10 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,purify = "filter"):
 
 
 if __name__ == "__main__":
-    num_runs = int(1e+4)
+    num_runs = int(1e+3)
     fidelity_list = []
     distances = [1,2,5,20,30,40,50]
-    distances = [50]
+    # distances = [50]
     for distance in distances:
         ns.sim_reset()
         network = example_network_setup(node_distance = distance)
