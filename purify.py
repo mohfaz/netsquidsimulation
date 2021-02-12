@@ -346,7 +346,8 @@ class Distil(NodeProtocol):
         self.remote_qcount = 0
         self.remote_meas_result = None
         self.header = msg_header
-        self._qmem_positions = [None, None]
+        self._qmem_positions = [None]*num_pos
+        self.num_pos = num_pos
         self._waiting_on_second_qubit = False
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
@@ -430,11 +431,11 @@ class Distil(NodeProtocol):
     def _node_do_DEJMPS(self):
         # Perform DEJMPS distillation protocol locally on one node
         # Invoked by _handle_new_qubits method
-        pos1, pos2 = self._qmem_positions
+        memory_positions = self._qmem_positions
         if self.node.qmemory.busy:
             yield self.await_program(self.node.qmemory)
         # We perform local DEJMPS
-        yield self.node.qmemory.execute_program(self._program, [pos1, pos2])  # If instruction not instant
+        yield self.node.qmemory.execute_program(self._program, [memory_positions[0], memory_positions[1]])  # If instruction not instant
         self.local_meas_result = self._program.output["m"][0]
         self._qmem_positions[1] = None
         # Send local results to the remote node to allow it to check for success. #TODO optimistic approach: 
@@ -456,7 +457,7 @@ class Distil(NodeProtocol):
                 self.send_signal(Signals.FAIL, self.local_qcount)
             self.local_meas_result = None
             self.remote_meas_result = None
-            self._qmem_positions = [None, None]
+            self._qmem_positions = [None]*self.num_pos
 
     @property
     def is_connected(self):
@@ -513,27 +514,28 @@ class DistilExample(LocalProtocol):
 
     """
 
-    def __init__(self, node_a, node_b, num_runs):
+    def __init__(self, node_a, node_b, num_runs, num_pos = 2):
         super().__init__(nodes={"A": node_a, "B": node_b}, name="Distilling example")
         
         self.num_runs = num_runs
         # Initialise sub-protocols
         
         self.add_subprotocol(EntangleNodes(node=node_a, role="source", input_mem_pos=0,
-                                           num_pairs=2, name="entangle_A"))
+                                           num_pairs=num_pos, name="entangle_A")) # node a adding entangle nodes
+        
         self.add_subprotocol(
-            EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=2,
-                          name="entangle_B"))
+            EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=num_pos,
+                          name="entangle_B")) # node b adding entangle nodes.
        
         # self.add_subprotocol(Filter(node_a, node_a.get_conn_port(node_b.ID), #TODO add distilation instructor
         #                             epsilon=epsilon, name="purify_A"))
         # self.add_subprotocol(Filter(node_b, node_b.get_conn_port(node_a.ID), #TODO add distilaiton instructor
         #                             epsilon=epsilon, name="purify_B"))
         self.add_subprotocol(Distil(node= node_a,
-        port= node_a.get_conn_port(node_b.ID), role='A',name = "purify_A"))
+        port= node_a.get_conn_port(node_b.ID), role='A',name = "purify_A", num_pos = num_pos))
        
         self.add_subprotocol(Distil(node= node_b,
-        port= node_b.get_conn_port(node_a.ID), role='B',name = "purify_B"))
+        port= node_b.get_conn_port(node_a.ID), role='B',name = "purify_B", num_pos = num_pos))
         # Set start expressions
         self.subprotocols["purify_A"].start_expression = (
             self.subprotocols["purify_A"].await_signal(self.subprotocols["entangle_A"],
@@ -661,7 +663,7 @@ class FilteringExample(LocalProtocol):
             self.send_signal(Signals.SUCCESS, result)
 
 
-def example_network_setup(source_delay=1e+4, source_fidelity_sq=0.8, depolar_rate=1000,
+def example_network_setup(source_delay=3, source_fidelity_sq=0.8, depolar_rate=1000,
                           node_distance=20):
     """Create an example network for use with the purification protocols.
 
@@ -745,7 +747,7 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,purify = "filter"):
     if purify == "filter":
         filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
     else:
-        distil_example = DistilExample(node_a, node_b, num_runs = num_runs)
+        distil_example = DistilExample(node_a, node_b, num_runs = num_runs, num_pos=node_a.qmemory.num_positions)
         
     def record_run(evexpr):
         # Callback that collects data each run
@@ -775,7 +777,7 @@ if __name__ == "__main__":
     num_runs = int(1e+3)
     fidelity_list = []
     distances = [1,2,5,20,30,40,50]
-    # distances = [50]
+    distances = [50]
     for distance in distances:
         ns.sim_reset()
         network = example_network_setup(node_distance = distance)
