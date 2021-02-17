@@ -110,7 +110,7 @@ from netsquid.components.qsource import QSource, SourceStatus
 from netsquid.components.qprocessor import QuantumProcessor
 from netsquid.qubits import ketstates as ks
 from netsquid.qubits.state_sampler import StateSampler
-
+from netsquid.util.simtools import sim_time
 from netsquid.components.models.delaymodels import FixedDelayModel, FibreDelayModel  # importing fibre delay model
 from netsquid.components.models.qerrormodels import FibreLossModel # importing fibre loss model
 
@@ -235,7 +235,7 @@ class EntangleNodes(NodeProtocol):
         return True
 
 
-def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
+def example_network_setup(prep_delay=1e+3, num_mem_positions=20,channel_length = 0
                           ,memory_a_depolar_rate=1e+3,memory_b_depolar_rate=1e+3,channel_depolar_rate=1e+3):
     """Create an example network for use with the entangling nodes protocol.
 
@@ -280,7 +280,7 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
     p_loss_init = 0.0
     p_loss_length  = 0.0
     
-    delay_model = FibreDelayModel()
+    delay_model = FibreDelayModel(c=200e3)
     loss_model = FibreLossModel(p_loss_init = p_loss_init, p_loss_length = p_loss_length)
     
     # Create and connect quantum channel:
@@ -304,26 +304,35 @@ def example_network_setup(prep_delay=5, num_mem_positions=3,channel_length = 0
 
 if __name__ == "__main__":
     
-    number_of_experiments = 1000
+    number_of_experiments = int(1e+4)
     fidelity_list = list();
-    distances = [1, 5, 10, 20, 50, 100,200] # distance vector, the unit is km.
- 
+    # distances = [1, 5, 10, 20, 50, 100 ,200] # distance vector, the unit is km.
+    
+    distances = [1, 2, 5, 20 , 30, 40 ,50]
+    # distances = [30]
+    times = []
     for distance in distances:
         fidelity = 0.0;
         
-        for _ in range(number_of_experiments):
-            network = example_network_setup(channel_length = distance,memory_a_depolar_rate=1e+2,channel_depolar_rate=1e+3)
+        for i in range(number_of_experiments):
+            network = example_network_setup(channel_length = distance,memory_a_depolar_rate=1e+3,channel_depolar_rate=1e+3)
             protocol_a = EntangleNodes(node=network.get_node("node_A"), role="source")
             protocol_b = EntangleNodes(node=network.get_node("node_B"), role="receiver")
             protocol_a.start()
             protocol_b.start()
+            time = sim_time()
             ns.sim_run()
+            # print(sim_time() - time)
             q1, = network.get_node("node_A").qmemory.peek(0)
+            # print(sim_time() - time)
             q2, = network.get_node("node_B").qmemory.peek(0)
-       
+            
             if q2 != None:
                 fidelity = fidelity + ns.qubits.fidelity([q1, q2], ks.b00);
-
+            # if i%100 == 0:
+            # print(i)
+        print(sim_time() - time)
+        times.append(sim_time() - time)
         fidelity_list.append(fidelity/number_of_experiments)    
         print("For the distance equals to {} km the average fidelity is {}".format(distance,fidelity/number_of_experiments))
 
