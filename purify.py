@@ -323,7 +323,7 @@ class Distil(NodeProtocol):
     _INSTR_Rx = IGate("Rx_gate", ops.create_rotation_op(np.pi / 2, (1, 0, 0)))
     _INSTR_RxC = IGate("RxC_gate", ops.create_rotation_op(np.pi / 2, (1, 0, 0), conjugate=True))
 
-    def __init__(self, node, port, role, start_expression=None, msg_header="distil", name=None, num_pos=2):
+    def __init__(self, node, port, role, start_expression=None, msg_header="distil", name=None, num_pos=2, number_of_purification_steps = 10):
         if role.upper() not in ["A", "B"]: # check the roles
             raise ValueError
             
@@ -337,18 +337,30 @@ class Distil(NodeProtocol):
         super().__init__(node, name=name) # the super is nodeprotocol
         
         self.port = port
-       # TODO rename this expression to 'qubit input'
+        
+        # TODO rename this expression to 'qubit input'
         self.start_expression = start_expression
         self._program = self._setup_dejmp_program(conj_rotation)
+        
         # self.INSTR_ROT = self._INSTR_Rx if not conj_rotation else self._INSTR_RxC
+        
         self.local_qcount = 0
         self.local_meas_result = None
         self.remote_qcount = 0
         self.remote_meas_result = None
         self.header = msg_header
         self._qmem_positions = [None]*num_pos
+        
         self.num_pos = num_pos
         self._waiting_on_second_qubit = False
+        
+        # my codes
+        self.first_time = True
+        self.main_Qbit_pos = -1
+        self.number_of_steps = number_of_purification_steps
+        self.step = 0;        
+        #
+        
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
 
@@ -395,6 +407,13 @@ class Distil(NodeProtocol):
         self.remote_qcount = 0
         self.remote_meas_result = None
         self._waiting_on_second_qubit = False
+        ## My codes
+        
+        self.first_time = True
+        self.main_Qbit_pos = -1
+        
+        
+        ##
         return super().start()
 
     def _clear_qmem_positions(self):
@@ -419,10 +438,22 @@ class Distil(NodeProtocol):
             # New candidate for first qubit arrived
             # Pop previous qubit if present:
             pop_positions = [p for p in self._qmem_positions if p is not None and p != memory_position]
+            
+            if self.main_Qbit_pos in pop_positions:
+                pop_positions.remove(self.main_Qbit_pos)
+                
             if len(pop_positions) > 0:
                 self.node.qmemory.pop(positions=pop_positions)
+                
             # Set new position:
-            self._qmem_positions[0] = memory_position
+            # self._qmem_positions[0] = memory_position # my codes
+            
+            # my codes
+            if self.first_time:
+                self._qmem_positions[0] = memory_position
+                self.first_time = False
+                self.main_Qbit_pos = memory_position
+                
             self._qmem_positions[1] = None
             self.local_qcount += 1
             self.local_meas_result = None
@@ -432,13 +463,19 @@ class Distil(NodeProtocol):
         # Perform DEJMPS distillation protocol locally on one node
         # Invoked by _handle_new_qubits method
         memory_positions = self._qmem_positions
+
         if self.node.qmemory.busy:
             yield self.await_program(self.node.qmemory)
         # We perform local DEJMPS
-        yield self.node.qmemory.execute_program(self._program, [memory_positions[0], memory_positions[1]])  # If instruction not instant
+        yield self.node.qmemory.execute_program(self._program, [self.main_Qbit_pos, memory_positions[1]])  # If instruction not instant
+        
         self.local_meas_result = self._program.output["m"][0]
         self._qmem_positions[1] = None
+        
         # Send local results to the remote node to allow it to check for success. #TODO optimistic approach: 
+        ## My codes:
+        self.step += 1
+        #
         self.port.tx_output(Message([self.local_qcount, self.local_meas_result],
                                     header=self.header))
 
@@ -451,14 +488,18 @@ class Distil(NodeProtocol):
             if self.local_meas_result == self.remote_meas_result:
                 # SUCCESS
                 self.send_signal(Signals.SUCCESS, self._qmem_positions[0])
+                
             else:
                 # FAILURE
                 self._clear_qmem_positions()
                 self.send_signal(Signals.FAIL, self.local_qcount)
+                self.first_time = True
+                self.main_Qbit_pos = -1
+                
             self.local_meas_result = None
             self.remote_meas_result = None
             self._qmem_positions = [None]*self.num_pos
-
+            
     @property
     def is_connected(self):
         if self.start_expression is None:
@@ -617,17 +658,16 @@ class DistilExample(LocalProtocol):
         self.num_runs = num_runs
         # Initialise sub-protocols
         
-        self.add_subprotocol(EntangleNodes(node=node_a, role="source", input_mem_pos=0,
-                                           num_pairs=num_pos, name="entangle_A")) # node a adding entangle nodes
+        self.add_subprotocol( EntangleNodes(node=node_a, role="source", input_mem_pos=0,
+                                           num_pairs=num_pos, name="entangle_A") )  # node a adding entangle nodes
         
         self.add_subprotocol(
+            
             EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=num_pos,
-                          name="entangle_B")) # node b adding entangle nodes.
+                          name="entangle_B") 
+            ) # node b adding entangle nodes.
        
-        # self.add_subprotocol(Filter(node_a, node_a.get_conn_port(node_b.ID), #TODO add distilation instructor
-        #                             epsilon=epsilon, name="purify_A"))
-        # self.add_subprotocol(Filter(node_b, node_b.get_conn_port(node_a.ID), #TODO add distilaiton instructor
-        #                             epsilon=epsilon, name="purify_B"))
+        
         self.add_subprotocol(Distil(node= node_a,
         port= node_a.get_conn_port(node_b.ID), role='A',name = "purify_A", num_pos = num_pos))
        
@@ -844,7 +884,7 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3, purify = "filter"):
     if purify == "filter":
         filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
     elif purify == "distil":
-        distil_example = DistilExample(node_a, node_b, num_runs = num_runs, num_pos=node_a.qmemory.num_positions)
+        distil_example = DistilExample(node_a, node_b, num_runs = num_runs, num_pos = node_a.qmemory.num_positions)
     elif purify == "None":
         pass
     else:
