@@ -264,14 +264,14 @@ class Filter(NodeProtocol):
         # Returns true if protocol has succeeded on this node
         if (self.local_qcount > 0 and self.local_qcount == self.remote_qcount and
                 self.local_meas_OK and self.remote_meas_OK):
-            # print("success")
+            print("success")
             # SUCCESS!
             self.send_signal(Signals.SUCCESS, self._qmem_pos)
         elif self.local_meas_OK and self.local_qcount > self.remote_qcount:
             # Need to wait for latest remote status, i.e., remote does not send the meas ok yet.
             pass
         else:
-            # print("failure")
+            print("failure")
             # FAILURE
             self._handle_fail()
             self.send_signal(Signals.FAIL, self.local_qcount)
@@ -358,7 +358,8 @@ class Distil(NodeProtocol):
         self.first_time = True
         self.main_Qbit_pos = -1
         self.number_of_steps = number_of_purification_steps
-        self.step = 0;        
+        self.step = 0
+        self.results = []        
         #
         
         if start_expression is not None and not isinstance(start_expression, EventExpression):
@@ -377,11 +378,13 @@ class Distil(NodeProtocol):
     
 
     def run(self):
-        cchannel_ready = self.await_port_input(self.port)
+        cchannel_ready = self.await_port_input(self.port) #receive the
+        # classical message which includes the measurement results, number of q count and the header
+        
         qmemory_ready = self.start_expression
         while True:
             # self.send_signal(Signals.WAITING)
-            expr = yield cchannel_ready | qmemory_ready # I think check if channel ready or the memory is ready
+            expr = yield cchannel_ready | qmemory_ready # I think this checks if channel ready or the memory is ready
             # self.send_signal(Signals.BUSY)
             if expr.first_term.value:
                 classical_message = self.port.rx_input(header=self.header) # classical message
@@ -395,8 +398,8 @@ class Distil(NodeProtocol):
                     event=expr.second_term.triggered_events[0], receiver=self)
                 
                 yield from self._handle_new_qubit(ready_signal.result)
-                
-            self._check_success()
+            if len(self.results) >= self.number_of_steps:
+                self._check_success()
 
 
     def start(self):
@@ -419,6 +422,7 @@ class Distil(NodeProtocol):
     def _clear_qmem_positions(self):
         # invoked in start and _check_success
         positions = [pos for pos in self._qmem_positions if pos is not None]
+        self.results = []
         if len(positions) > 0:
             self.node.qmemory.pop(positions=positions)
         self._qmem_positions = [None, None] # TODO what if the we use more than two qubits
@@ -451,6 +455,7 @@ class Distil(NodeProtocol):
             # my codes
             if self.first_time:
                 self._qmem_positions[0] = memory_position
+                # print("Node: ",self.name," Control Qbit is stored in ",memory_position)
                 self.first_time = False
                 self.main_Qbit_pos = memory_position
                 
@@ -468,37 +473,48 @@ class Distil(NodeProtocol):
             yield self.await_program(self.node.qmemory)
         # We perform local DEJMPS
         yield self.node.qmemory.execute_program(self._program, [self.main_Qbit_pos, memory_positions[1]])  # If instruction not instant
-        
+        # print("Node: ", self.name, ". The control Qbit {} is purified by the target Qbit {}".format(self.main_Qbit_pos, memory_positions[1]))
         self.local_meas_result = self._program.output["m"][0]
+        
+        
         self._qmem_positions[1] = None
         
         # Send local results to the remote node to allow it to check for success. #TODO optimistic approach: 
         ## My codes:
         self.step += 1
+        self.results.append(self.local_meas_result)  
+        if len(self.results) >= self.number_of_steps:
+            self.port.tx_output(Message([self.local_qcount, self.results],
+                                     header=self.header))
+        
+        
         #
-        self.port.tx_output(Message([self.local_qcount, self.local_meas_result],
-                                    header=self.header))
+        
+        
+        # self.port.tx_output(Message([self.local_qcount, self.local_meas_result],
+                                    # header=self.header))
 
     def _check_success(self):
         # Check if distillation succeeded by comparing local and remote results
         # used by run() method
         if (self.local_qcount == self.remote_qcount and
                 self.local_meas_result is not None and
-                self.remote_meas_result is not None):
-            if self.local_meas_result == self.remote_meas_result:
+                self.remote_meas_result is not None ):
+            if self.results  == self.remote_meas_result:
                 # SUCCESS
                 self.send_signal(Signals.SUCCESS, self._qmem_positions[0])
-                
+                # print("Node ",self.name," success")
             else:
+                # print("Node ",self.name," FAILURE")
                 # FAILURE
                 self._clear_qmem_positions()
                 self.send_signal(Signals.FAIL, self.local_qcount)
                 self.first_time = True
                 self.main_Qbit_pos = -1
-                
+            self.results = []    
             self.local_meas_result = None
             self.remote_meas_result = None
-            self._qmem_positions = [None]*self.num_pos
+            self._qmem_positions[1] = None
             
     @property
     def is_connected(self):
@@ -673,6 +689,7 @@ class DistilExample(LocalProtocol):
        
         self.add_subprotocol(Distil(node= node_b,
         port= node_b.get_conn_port(node_a.ID), role='B',name = "purify_B", num_pos = num_pos))
+       
         # Set start expressions
         self.subprotocols["purify_A"].start_expression = (
             self.subprotocols["purify_A"].await_signal(self.subprotocols["entangle_A"],
@@ -688,7 +705,7 @@ class DistilExample(LocalProtocol):
         
     def run(self):
         self.start_subprotocols()
-        for i in range(self.num_runs):
+        for i in range(self.num_runs): # Note the number of runs here
             start_time = sim_time()
             self.subprotocols["entangle_A"].entangled_pairs = 0
             self.send_signal(Signals.WAITING)
@@ -705,6 +722,8 @@ class DistilExample(LocalProtocol):
                 "pairs": self.subprotocols["entangle_A"].entangled_pairs,
             }
             self.send_signal(Signals.SUCCESS, result)
+            # Maybe it is a good idea to send the failure sigal too.
+            
 
 class FilteringExample(LocalProtocol):
     r"""Protocol for a complete filtering experiment.
@@ -920,9 +939,10 @@ if __name__ == "__main__":
     times = []
     distances = [1,2,5,20,30,40,50]
     # distances = [30]
-    
+    # distances  = [1]
     for distance in distances:
         ns.sim_reset()
+        print("The distance is ", distance)
         network = example_network_setup(node_distance = distance)
         filt_example, dc = example_sim_setup(network.get_node("node_A"),
                                          network.get_node("node_B"),
@@ -932,6 +952,6 @@ if __name__ == "__main__":
     
         fidelity = dc.dataframe["F2"].mean()
         times.append(dc.dataframe["time"].mean())
-        print("Average fidelity of generated entanglement with filtering: {}".format(fidelity))
+        print( "Average fidelity of generated entanglement with filtering: {}".format(fidelity) )
         fidelity_list.append(fidelity)
         ns.sim_stop()
