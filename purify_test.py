@@ -205,7 +205,7 @@ class EntangleNodes(NodeProtocol):
             for mem_pos in self._mem_positions[::-1]:
                 # Iterate in reverse so that input_mem_pos is handled last
                 if self._is_source:
-                    self.node.subcomponents[self._qsource_name].trigger()
+                    self.node.subcomponents[self._qsource_name].trigger() # trigger the quantum source
                 yield self.await_port_input(self._qmem_input_port)
                 if mem_pos != self._input_mem_pos:
                     self.node.qmemory.execute_instruction(

@@ -125,8 +125,7 @@ from netsquid.protocols.nodeprotocols import NodeProtocol, LocalProtocol
 from netsquid.protocols.protocol import Signals
 from netsquid.nodes.node import Node
 from netsquid.nodes.network import Network
-from netsquid.examples.entanglenodes import EntangleNodes
-from netsquid.components.instructions import INSTR_MEASURE, INSTR_CNOT, IGate
+from netsquid.components.instructions import INSTR_MEASURE, INSTR_CNOT, IGate, INSTR_SWAP
 from netsquid.components.component import Message, Port
 from netsquid.components.qsource import QSource, SourceStatus
 from netsquid.components.qprocessor import QuantumProcessor
@@ -139,6 +138,7 @@ from netsquid.nodes.connections import DirectConnection
 from pydynaa import EventExpression
 
 __all__ = [
+    "EntangleNodes",
     "Filter",
     "Distil",
     "FilteringExample",
@@ -146,6 +146,144 @@ __all__ = [
     "example_sim_setup",
 ]
 
+class EntangleNodes(NodeProtocol):
+    """Cooperate with another node to generate shared entanglement.
+
+    Parameters
+    ----------
+    node : :class:`~netsquid.nodes.node.Node`
+        Node to run this protocol on.
+    role : "source" or "receiver"
+        Whether this protocol should act as a source or a receiver. Both are needed.
+    start_expression : :class:`~pydynaa.core.EventExpression` or None, optional
+        Event Expression to wait for before starting entanglement round.
+    input_mem_pos : int, optional
+        Index of quantum memory position to expect incoming qubits on. Default is 0.
+    num_pairs : int, optional
+        Number of entanglement pairs to create per round. If more than one, the extra qubits
+        will be stored on available memory positions.
+    name : str or None, optional
+        Name of protocol. If None a default name is set.
+
+    """
+
+    def __init__(self, node, role, start_expression=None, input_mem_pos=0, num_pairs=3, name=None):
+        if role.lower() not in ["source", "receiver"]:
+            raise ValueError
+        self._is_source = role.lower() == "source"
+        name = name if name else "EntangleNode({}, {})".format(node.name, role)
+        super().__init__(node=node, name=name)
+        if start_expression is not None and not isinstance(start_expression, EventExpression):
+            raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
+        self.start_expression = start_expression
+        self._num_pairs = num_pairs
+        self._mem_positions = None
+        # Claim input memory position:
+        if self.node.qmemory is None:
+            raise ValueError("Node {} does not have a quantum memory assigned.".format(self.node))
+        self._input_mem_pos = input_mem_pos
+        self._qmem_input_port = self.node.qmemory.ports["qin{}".format(self._input_mem_pos)]
+        self.node.qmemory.mem_positions[self._input_mem_pos].in_use = True
+        self.pro = None;
+    def setProtocol_(self,protocol):
+        self.pro = protocol;
+        
+    def start(self):
+        self.entangled_pairs = 0  # counter
+        # self._mem_positions = [self._input_mem_pos]
+        # # Claim extra memory positions to use (if any):
+        # extra_memory = self._num_pairs - 1
+        # if extra_memory > 0:
+        #     unused_positions = self.node.qmemory.unused_positions
+        #     if extra_memory > len(unused_positions):
+        #         raise RuntimeError("Not enough unused memory positions available: need {}, have {}"
+        #                            .format(self._num_pairs - 1, len(unused_positions)))
+        #     for i in unused_positions[:extra_memory]:
+        #         self._mem_positions.append(i)
+        #         self.node.qmemory.mem_positions[i].in_use = True
+        # # Call parent start method
+        self._mem_positions = list(range(2))
+        return super().start()
+
+    def stop(self):
+        # Unclaim used memory positions:
+        if self._mem_positions:
+            for i in self._mem_positions[1:]:
+                self.node.qmemory.mem_positions[i].in_use = False
+            self._mem_positions = None
+        # Call parent stop method
+        super().stop()
+
+    def run(self):
+        while True:
+            if self.start_expression is not None:
+                yield self.start_expression
+            elif self._is_source and self.entangled_pairs >= self._num_pairs:
+                # If no start expression specified then limit generation to one round
+                break
+            while(True):
+                mem_pos = 0;
+                if self._is_source:
+                        self.node.subcomponents[self._qsource_name].trigger()
+                        
+                yield self.await_port_input(self._qmem_input_port)
+                if self.node.qmemory.mem_positions[1].is_empty:
+                    mem_pos = 1
+                    self.node.qmemory.execute_instruction(
+                            INSTR_SWAP, [self._input_mem_pos, mem_pos])
+                    if self.node.qmemory.busy:
+                            yield self.await_program(self.node.qmemory)
+                
+                    
+                self.entangled_pairs += 1
+                self.send_signal(Signals.SUCCESS, mem_pos)
+                if self._is_source:
+                    yield self.await_signal(self.pro,Signals.READY)
+                    print("wait for the ready signal from the source")
+            # for mem_pos in self._mem_positions[::-1]:
+            #         # Iterate in reverse so that input_mem_pos is handled last
+            #     if not self.node.qmemory.mem_positions[mem_pos].is_empty:
+            #         continue
+                
+            #     if self._is_source:
+            #             self.node.subcomponents[self._qsource_name].trigger()
+                        
+            #     yield self.await_port_input(self._qmem_input_port)
+                
+            #     if mem_pos != self._input_mem_pos:
+            #         self.node.qmemory.execute_instruction(
+            #                 INSTR_SWAP, [self._input_mem_pos, mem_pos])
+            #         if self.node.qmemory.busy:
+            #                 yield self.await_program(self.node.qmemory)
+                
+            #     self.entangled_pairs += 1
+            #     self.send_signal(Signals.SUCCESS, mem_pos)
+            #     if self._is_source:
+            #         yield self.await_signal(self.pro,Signals.READY)
+            #         print("wait for the ready signal from the source")
+    def _empty_position(self):
+        for i in self._mem_positions:
+            if self.node.qmemory.mem_positions[i].is_empty:
+                return True
+        return False
+    @property
+    def is_connected(self):
+        if not super().is_connected:
+            return False
+        if self.node.qmemory is None:
+            return False
+        # if self._mem_positions is None and len(self.node.qmemory.unused_positions) < self._num_pairs - 1:
+        #     return False
+        # if self._mem_positions is not None and len(self._mem_positions) != self._num_pairs:
+            # return False
+        if self._is_source:
+            for name, subcomp in self.node.subcomponents.items():
+                if isinstance(subcomp, QSource):
+                    self._qsource_name = name
+                    break
+            else:
+                return False
+        return True
 
 class Filter(NodeProtocol):
     """Protocol that does local filtering on a node.
@@ -402,12 +540,17 @@ class Distil(NodeProtocol):
             # self.send_signal(Signals.BUSY)
             if expr.first_term.value:
                 classical_message = self.port.rx_input(header=self.header) # classical message
+                classical_message_arrived = self.port.rx_input(header="entangle") # classical message
                 if classical_message:
                     self.remote_control_qbit_pos, self.remote_meas_result = classical_message.items
                     print("The node {} receives a message from the other node: {}".format(self.name, self.remote_meas_result ))
                     self.queue_remote_control_qbit_pos.append(self.remote_control_qbit_pos)
                     self.queue_remote_meas_results.append(self.remote_meas_result)
                     self._check_success()
+                if classical_message_arrived:
+                    print(classical_message_arrived.items)
+                    self.send_signal(Signals.READY)
+                    #
             
             elif expr.second_term.value:
                 
@@ -449,6 +592,9 @@ class Distil(NodeProtocol):
     def _handle_new_qubit(self, memory_position): 
         # Process signalling of new entangled qubit
         # invoked buy run
+        if self.name == "purify_B":
+            self.port.tx_output( Message([self.name, "arrived"],
+                                     header="entangle") )
         assert not self.node.qmemory.mem_positions[memory_position].is_empty # memory should not be empty
         if self._waiting_on_second_qubit:
             # Second qubit arrived: perform distil
@@ -469,8 +615,8 @@ class Distil(NodeProtocol):
                 
             if len(pop_positions) > 0:
                pass # self.node.qmemory.pop(positions=pop_positions)
-            if memory_position == self.main_Qbit_pos:
-                raise("khak bar saret")
+            # if memory_position == self.main_Qbit_pos:
+            #     raise("khak bar saret")
             # Set new position:
             # self._qmem_positions[0] = memory_position # my codes
             
@@ -514,11 +660,10 @@ class Distil(NodeProtocol):
             self.queue_local_control_qbit_mem_pos.append(self.main_Qbit_pos) # 
             
             self.results = [] 
-            self.main_Qbit_pos = -1  # reset main qubit pos index
+            # self.main_Qbit_pos = -1  # reset main qubit pos index
             
             self._waiting_on_second_qubit = False # set the control qubit for the purification
             
-            self.first_time = True # reset the  procedure
             
             self.k_step += 1
             
@@ -558,7 +703,8 @@ class Distil(NodeProtocol):
             else:
                 print("Node ",self.name," FAILURE",'\ntime: ', sim_time() -  self.start_time)
                 # FAILURE
-                # self._clear_qmem_positions()
+                self.node.qmemory.pop(0)
+                self.node.qmemory.pop(1)
                 self.send_signal(Signals.FAIL, self.local_qcount)
                 self.first_time = True
                 self.main_Qbit_pos = -1
@@ -569,6 +715,7 @@ class Distil(NodeProtocol):
             self._waiting_on_second_qubit = False
             self.first_time = True
             self.main_Qbit_pos = -1
+            self.k_step = 0
             # self._clear_qmem_positions()
             
     @property
@@ -749,6 +896,8 @@ class DistilExample(LocalProtocol):
         port= node_b.get_conn_port(node_a.ID), role='B',name = "purify_B",
         num_pos = num_pos,number_of_purification_steps=number_of_purification_steps, k = k))
        
+        self.subprotocols["entangle_A"].setProtocol_(self.subprotocols["purify_A"])
+
         # Set start expressions
         self.subprotocols["purify_A"].start_expression = (
             self.subprotocols["purify_A"].await_signal(self.subprotocols["entangle_A"],
@@ -757,10 +906,11 @@ class DistilExample(LocalProtocol):
         self.subprotocols["purify_B"].start_expression = (
             self.subprotocols["purify_B"].await_signal(self.subprotocols["entangle_B"],
                                                        Signals.SUCCESS))
-        start_expr_ent_A = (self.subprotocols["entangle_A"].await_signal(
+        start_expr_ent_A = (
+                            self.subprotocols["entangle_A"].await_signal(
                             self.subprotocols["purify_A"], Signals.FAIL) |
                             self.subprotocols["entangle_A"].await_signal(
-                                self, Signals.WAITING))
+                                self, Signals.WAITING) )
         self.subprotocols["entangle_A"].start_expression = start_expr_ent_A
         
     def run(self):
@@ -875,6 +1025,8 @@ class FilteringExample(LocalProtocol):
                                     epsilon=epsilon, name="purify_A"))
         self.add_subprotocol(Filter(node_b, node_b.get_conn_port(node_a.ID),
                                     epsilon=epsilon, name="purify_B"))
+        
+        
         # Set start expressions
         self.subprotocols["purify_A"].start_expression = (
             self.subprotocols["purify_A"].await_signal(self.subprotocols["entangle_A"],
@@ -928,7 +1080,7 @@ def example_network_setup(source_delay=3, source_fidelity_sq=1, depolar_rate=1e+
     # num_positions = max(int(2*node_distance/(source_delay*source_delay/1e+9)),2)
     # num_positions = min(num_positions,20)
     # print(num_positions)
-    num_positions = 2*purification_steps+1
+    num_positions = 2
     network = Network("purify_network")
 
     node_a, node_b = network.add_nodes(["node_A", "node_B"])
@@ -1035,12 +1187,12 @@ class logger():
             print(str)
 
 if __name__ == "__main__":
-    num_runs = int(1e+3)
+    num_runs = int(1)
     fidelity_list = []
     times = []
     distances = [1,2,5,20,30,40,50]
     number_of_purification_step  = 1 # number of consecutive 
-    k = 1 # maximum number of purification step
+    k = 3 # maximum number of purification step
     # distances = [30]
     # distances  = [1000]
     # distances  = [200e+3]
