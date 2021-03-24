@@ -166,7 +166,7 @@ class EntangleNodes(NodeProtocol):
 
     """
 
-    def __init__(self, node, role, start_expression=None, input_mem_pos=0, num_pairs=3, name=None):
+    def __init__(self, node, role, start_expression=None, input_mem_pos=0, num_pairs=3, name=None,node_distance = 1):
         if role.lower() not in ["source", "receiver"]:
             raise ValueError
         self._is_source = role.lower() == "source"
@@ -183,20 +183,26 @@ class EntangleNodes(NodeProtocol):
         self._input_mem_pos = input_mem_pos
         self._qmem_input_port = self.node.qmemory.ports["qin{}".format(self._input_mem_pos)]
         self.node.qmemory.mem_positions[self._input_mem_pos].in_use = True
-        
         self.k = 2
         self._control_mem_index = len(self.node.qmemory.mem_positions)-1
         self.pro = None;
         # Adding the clock
         self.main_qbit = -1;
         self.generating_ebits = True
+
+        self.distance = node_distance
+
         if self._is_source:
             self.timer = []
+        self.time_out = self._set_timeout()
         
     def setProtocol_(self,protocol):
         self.pro = protocol;
-    
         
+    def _set_timeout(self):
+        maximum_wait = 1 # nano seconds
+        return 2*(self.distance/200000*10**9) + maximum_wait
+
     def intermediate(self):
         self._is_intermediate = True
     def start(self):
@@ -230,8 +236,9 @@ class EntangleNodes(NodeProtocol):
     
         while True:
             if self.start_expression is not None:
-        
-                yield self.start_expression
+                source_expression = self.start_expression
+                yield source_expression
+                print("start to work")
             elif self._is_source and self.entangled_pairs >= self._num_pairs:
                 # If no start expression specified then limit generation to one round
                 print("Source Is Overloaded")
@@ -255,8 +262,8 @@ class EntangleNodes(NodeProtocol):
                     yield self.await_port_input(self._qmem_input_port) 
                     
                     if self._is_source:
-                        print("timer set to  ", ns.sim_time()+10001)
-                        self.timer.append(self.await_timer(end_time = ns.sim_time()+10001))
+                        print("timer set to  ", ns.sim_time() + self.time_out)
+                        self.timer.append(self.await_timer(end_time = ns.sim_time() + self.time_out))
                         
                     if mem_pos != self._input_mem_pos:
                         self.node.qmemory.execute_instruction(
@@ -283,7 +290,7 @@ class EntangleNodes(NodeProtocol):
                             else:
                                 print('timer is triggered')
                                 print(ns.sim_time())
-                                self.node.qmemory.mem_positions[mem_pos].pop()
+                                self.node.qmemory.mem_positions.pop(mem_pos)
                 if self._is_source: # check if the all memories are empty or not if empty start all over again
                     number_of_empty_memories = 0
                     for mem_pos in self._mem_positions[::-1]: # start from 
@@ -291,12 +298,19 @@ class EntangleNodes(NodeProtocol):
                             number_of_empty_memories += 1
                     if number_of_empty_memories == len(self._mem_positions):
                         continue
-                expression = yield self.await_signal(self.pro, Signals.BUSY) | self.await_signal(self.pro, Signals.FINISHED) # what if failure happens
+                expression = yield (self.await_signal(self.pro, Signals.FAIL) |
+                                    self.await_signal(self.pro, Signals.SUCCESS))| self.await_signal(self.pro, Signals.FINISHED) # what if failure happens
                 if expression.first_term.value:
-                    self.generating_ebits = False
-                    self.main_qbit = -1
-                    self.entangled_pairs = 0
-                    
+                    if expression.first_term.first_term.value: # failed
+                        self.main_qbit = -1
+                        self.entangled_pairs = 0
+                        print("signal failure arrived at node {}".format(self.node.name))
+                    else:
+                        self.generating_ebits = False
+                        self.main_qbit = -1
+                        self.entangled_pairs = 0
+                        print("signal success arrived at node {}".format(self.node.name))
+
                 if expression.second_term.value:
                     pass
                 
@@ -392,15 +406,18 @@ class Distil(NodeProtocol):
         # my codes
         self.first_time = True
         self.main_Qbit_pos = -1
+        
         self.number_of_purification_steps_before_check = number_of_purification_steps_before_check
+        self.number_of_purification_steps_before_check_temp = number_of_purification_steps_before_check
+        
+        
         self.step = 0
         self.results = []
         self.start_time = sim_time()
-        self.succeeded = False
-        self.halt = False
         self.remote_control_qbit_pos = -1;
         self.purific_step = 0
         self.maximum_number_of_purification_step = maximum_number_of_purification_step
+        
         # queues
         
         self.queue_local_meas_results = []
@@ -579,24 +596,29 @@ class Distil(NodeProtocol):
         if (
                len(self.queue_local_meas_results) >= self.number_of_purification_steps_before_check and
                 len(self.queue_remote_meas_results) >= self.number_of_purification_steps_before_check):
-            
+                
             meas_remote = self.queue_remote_meas_results[0: self.number_of_purification_steps_before_check]
             meas_local = self.queue_local_meas_results[0: self.number_of_purification_steps_before_check]
             
             if meas_remote  == meas_local:
+                
                 # SUCCESS
                 del self.queue_remote_meas_results[0: self.number_of_purification_steps_before_check]
                 del self.queue_local_meas_results[0: self.number_of_purification_steps_before_check]
+                self.number_of_purification_steps_before_check = min(self.number_of_purification_steps_before_check_temp,
+                                    self.maximum_number_of_purification_step-self.purific_step)
                 
                 if self.purific_step  >= self.maximum_number_of_purification_step:
                     self.send_signal(Signals.SUCCESS, self.queue_local_control_qbit_mem_pos.pop(0))
-                    self.send_signal(Signals.BUSY)
+                    
+                    self.number_of_purification_steps_before_check = self.number_of_purification_steps_before_check_temp
+                    
                     print("Node ",self.name," success",'\ntime: ', sim_time() -  self.start_time)
-                    self.succeeded = True
                     self._waiting_on_second_qubit = False
                     self.first_time = True
                     self.main_Qbit_pos = -1
                     self.purific_step = 0
+                    self.send_signal(Signals.BUSY)
                 else:
                     self.send_signal(Signals.FINISHED)
                     
@@ -606,14 +628,17 @@ class Distil(NodeProtocol):
                 # FAILURE
                 # clear memory
                 self._clear_qmem_positions()
-                self.send_signal(Signals.BUSY)
-                self.send_signal(Signals.FAIL, self.local_qcount)
+                self.send_signal(Signals.FAIL)
                 self.first_time = True
                 self.main_Qbit_pos = -1
                 self.purific_step = 0
                 self._waiting_on_second_qubit = False
                 self.first_time = True
                 self.main_Qbit_pos = -1
+                self.send_signal(Signals.BUSY)
+                self.queue_remote_meas_results = []
+                self.queue_local_meas_results = []
+                self.number_of_purification_steps_before_check = self.number_of_purification_steps_before_check_temp
                 
                 
             self.results = []    
@@ -679,18 +704,21 @@ class DistilExample(LocalProtocol):
 
     """
 
-    def __init__(self, node_a, node_b, num_runs, num_pos = 2,number_of_purification_steps =1, maximum_number_of_purification_step = 1):
+    def __init__(self, node_a, node_b,num_runs, node_distance = 1  ,num_pos = 2,number_of_purification_steps =1, maximum_number_of_purification_step = 1):
         super().__init__(nodes={"A": node_a, "B": node_b}, name="Distilling example")
+        
+        self.node_a = node_a
+        self.node_b = node_b
         
         self.num_runs = num_runs
         # Initialise sub-protocols
         
         # Entangelment  Protocols
         self.add_subprotocol( EntangleNodes(node=node_a, role="source", input_mem_pos=0,
-                                           num_pairs= number_of_purification_steps+1, name="entangle_A") )  # node a adding entangle nodes
+                                           num_pairs= number_of_purification_steps+1, name="entangle_A",node_distance=node_distance) )  # node a adding entangle nodes
         self.add_subprotocol(
             EntangleNodes(node=node_b, role="receiver", input_mem_pos=0, num_pairs=number_of_purification_steps+1,
-                          name="entangle_B") 
+                          name="entangle_B",node_distance = node_distance) 
             ) # node b adding entangle nodes.
        
         # Distilation Protocols
@@ -703,7 +731,7 @@ class DistilExample(LocalProtocol):
         num_pos = num_pos,number_of_purification_steps_before_check=number_of_purification_steps, maximum_number_of_purification_step = maximum_number_of_purification_step))
        
         self.subprotocols["entangle_A"].setProtocol_(self.subprotocols["purify_A"])
-        self.subprotocols["entangle_B"].setProtocol_(self.subprotocols["purify_A"])
+        self.subprotocols["entangle_B"].setProtocol_(self.subprotocols["purify_B"])
 
         # Set start expressions
         self.subprotocols["purify_A"].start_expression = (
@@ -722,11 +750,6 @@ class DistilExample(LocalProtocol):
         self.subprotocols["entangle_A"].start_expression = start_expr_ent_A
         
     def run(self):
-        node_b = []
-        node_a = []
-        node_a_temp = []
-        node_b_temp = []
-        
         self.start_subprotocols()
         for i in range(self.num_runs): # Note the number of runs here
             print("The run number  is: ",i)
@@ -737,15 +760,18 @@ class DistilExample(LocalProtocol):
             yield (self.await_signal(self.subprotocols["purify_B"], Signals.SUCCESS) & self.await_signal(self.subprotocols["purify_A"], Signals.SUCCESS))
             signal_A = self.subprotocols["purify_A"].get_signal_result(Signals.SUCCESS,
                                                                         self)
-            signal_B = self.subprotocols["purify_B"].get_signal_result(Signals.SUCCESS,
-                                                                        self)
+            signal_B = self.subprotocols["purify_B"].get_signal_result(Signals.SUCCESS,self)
+            q_A, = self.node_a.qmemory.pop(positions=signal_A)
+            q_B, = self.node_b.qmemory.pop(positions=signal_B)
+            qbits = (q_A,q_B)                    
             result = {
-                "pos_A": signal_A,
-                "pos_B": signal_B,
+                "qbits" : qbits,
                 "time": sim_time() - start_time,
                 "pairs": self.subprotocols["entangle_A"].entangled_pairs,
             }
+            print("sending success signal")
             self.send_signal(Signals.SUCCESS, result)
+            
             print("///////////////////////////////////////")
             # self.reset()
             # Maybe it is a good idea to send the failure sigal too.
@@ -823,7 +849,7 @@ def example_network_setup(source_delay=3, source_fidelity_sq=1, depolar_rate=1e+
     return network
 
 
-def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,
+def example_sim_setup( node_a, node_b, num_runs,node_distance = 1 ,epsilon=0.3,
                       purify = "filter", number_of_purification_steps = 1, maximum_number_of_purification_step = 1):
     """Example simulation setup for purification protocols.
 
@@ -839,7 +865,7 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,
         # filt_example = FilteringExample(node_a, node_b, num_runs=num_runs, epsilon=epsilon)
         pass
     elif purify == "distil":
-        distil_example = DistilExample(node_a, node_b, num_runs = num_runs,
+        distil_example = DistilExample(node_a, node_b,node_distance = node_distance, num_runs = num_runs,
         num_pos = node_a.qmemory.num_positions,
         number_of_purification_steps =number_of_purification_steps, maximum_number_of_purification_step = maximum_number_of_purification_step)
         
@@ -853,10 +879,14 @@ def example_sim_setup(node_a, node_b, num_runs, epsilon=0.3,
         protocol = evexpr.triggered_events[-1].source
         result = protocol.get_signal_result(Signals.SUCCESS)
         # Record fidelity
-        q_A, = node_a.qmemory.pop(positions=[result["pos_A"]])
-        q_B, = node_b.qmemory.pop(positions=[result["pos_B"]])
-        print(result["pos_A"])
-        print(result["pos_B"])
+        # q_A, = node_a.qmemory.pop(positions=[result["pos_A"]])
+        # q_B, = node_b.qmemory.pop(positions=[result["pos_B"]])
+        qbits = result["qbits"]
+        q_A = qbits[0]
+        q_B = qbits[1]
+        
+        print(q_A)
+        print(q_B)
         f2 = qapi.fidelity([q_A, q_B], ks.b01, squared=True)
         return {"F2": f2, "pairs": result["pairs"], "time": result["time"]}
     dc = DataCollector(record_run, include_time_stamp=False,
@@ -879,29 +909,31 @@ class logger():
             print(str)
 
 if __name__ == "__main__":
-    num_runs = int(1)
-    fidelity_list = []
-    times = []
-    distances = [1,2,5,20,30,40,50]
-    number_of_purification_step  = 2# number of consecutive 
-    maximum_number_of_purification_step = 10# maximum number of purification step
-    # distances = [30]
-    # distances  = [1000]
-    distances  = [1]
-    for distance in distances:
-        ns.sim_reset()
-        print("The distance is ", distance, " km")
-        network = example_network_setup(node_distance = distance,purification_steps = number_of_purification_step)
-        filt_example, dc = example_sim_setup(network.get_node("node_A"),
-                                         network.get_node("node_B"),
-                                         num_runs=num_runs, purify = "distil",number_of_purification_steps = number_of_purification_step, maximum_number_of_purification_step =maximum_number_of_purification_step   )
-        filt_example.start()
-        ns.sim_run()
-        
-        fidelity = dc.dataframe["F2"].mean()
-        times.append(dc.dataframe["time"].mean())
-        print( "Average fidelity of generated entanglement with distilation: {}".format(fidelity) )
-        fidelity_list.append(fidelity)
-        print(times)
-        ns.sim_stop()
-        
+    # for _ in range(1000):
+        num_runs = int(1)
+        fidelity_list = []
+        times = []
+        distances = [1,2,5,20,30,40,50]
+        number_of_purification_step  = 1# number of consecutive 
+        maximum_number_of_purification_step = 2# maximum number of purification step
+        # distances= [30]
+        # distances  = [1000]
+        distances  = [50]
+        for distance in distances:
+            ns.sim_reset()
+            print("The distance is ", distance, " km")
+            network = example_network_setup(node_distance = distance,purification_steps = number_of_purification_step)
+            
+            filt_example, dc = example_sim_setup(network.get_node("node_A"),
+                                             network.get_node("node_B"),
+                                             num_runs=num_runs, node_distance = distance ,purify = "distil",number_of_purification_steps = number_of_purification_step, maximum_number_of_purification_step =maximum_number_of_purification_step   )
+            filt_example.start()
+            ns.sim_run()
+            
+            fidelity = dc.dataframe["F2"].mean()
+            times.append(dc.dataframe["time"].mean())
+            print( "Average fidelity of generated entanglement with distilation: {}".format(fidelity) )
+            fidelity_list.append(fidelity)
+            print(times)
+            ns.sim_stop()
+            
